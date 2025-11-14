@@ -1,3 +1,4 @@
+# main.py
 from fastapi import FastAPI, HTTPException, Form, File, UploadFile, Request, Response
 from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
@@ -6,6 +7,11 @@ import os
 import shutil
 from uuid import uuid4
 from datetime import datetime, timedelta
+import jwt
+
+SECRET_KEY = "simple-secret-key"
+ALGORITHM = "HS256"
+JWT_EXPIRE_MINUTES = 30
 
 app = FastAPI()
 
@@ -82,27 +88,26 @@ def add_movie_form():
 @app.post("/add-movie")
 async def add_movie(
     name: str = Form(...),
-    director: str = Form(...), 
+    director: str = Form(...),
     budget: int = Form(...),
     is_hit: bool = Form(False),
     description_file: UploadFile = File(None),
     cover_file: UploadFile = File(None)
 ):
     movie_id = len(movies) + len(added_movies) + 1
-    
+
     description_path = None
     cover_path = None
-    
+
     if description_file and description_file.filename:
         description_path = f"static/uploads/desc_{movie_id}_{description_file.filename}"
         with open(description_path, "wb") as f:
             shutil.copyfileobj(description_file.file, f)
-    
+
     if cover_file and cover_file.filename:
         cover_path = f"static/uploads/cover_{movie_id}_{cover_file.filename}"
         with open(cover_path, "wb") as f:
             shutil.copyfileobj(cover_file.file, f)
-    
 
     new_movie = {
         "id": movie_id,
@@ -113,9 +118,9 @@ async def add_movie(
         "description_file": description_path,
         "cover_file": cover_path
     }
-    
+
     added_movies.append(new_movie)
-    
+
     return {"message": "Фильм добавлен!", "movie": new_movie}
 
 @app.get("/movies-with-photos", response_class=HTMLResponse)
@@ -130,7 +135,7 @@ def movies_with_photos():
     <h1>Все фильмы с фотографиями</h1>
     <p><a href="/add-movie">Добавить новый фильм</a></p>
 """
-    
+
     for movie in added_movies:
         html += f"""
     <div>
@@ -139,23 +144,75 @@ def movies_with_photos():
         <p><strong>Бюджет:</strong> {movie['budget']}</p>
         <p><strong>Хит сезона:</strong> {'Да' if movie['is_hit'] else 'Нет'}</p>
 """
-        
-        if movie['cover_file']:
+        if movie["cover_file"]:
             html += f'        <p><img src="/{movie["cover_file"]}"></p>'
-        
-        if movie['description_file']:
+        if movie["description_file"]:
             html += f'        <p><a href="/{movie["description_file"]}">Скачать описание</a></p>'
-        
         html += "    </div>"
-    
+
     if not added_movies:
         html += "<p>Пока нет добавленных фильмов с фото.</p>"
-    
+
     html += """
 </body>
 </html>"""
-    
+
     return html
+
+@app.get("/add_film", response_class=HTMLResponse)
+def add_film_form():
+    return """<!doctype html>
+<html lang="ru">
+<head>
+    <meta charset="utf-8">
+    <title>Добавить фильм (JWT)</title>
+</head>
+<body>
+    <h1>Добавить фильм (JWT)</h1>
+    <form action="/add_film" method="post">
+        <p>Название: <input type="text" name="name" required></p>
+        <p>Режиссер: <input type="text" name="director" required></p>
+        <p>Бюджет: <input type="number" name="budget" required></p>
+        <p><label><input type="checkbox" name="is_hit"> окупился?</label></p>
+        <p><input type="submit" value="Добавить фильм"></p>
+    </form>
+</body>
+</html>"""
+
+@app.post("/add_film")
+async def add_film(
+    request: Request,
+    name: str = Form(...),
+    director: str = Form(...),
+    budget: int = Form(...),
+    is_hit: bool = Form(False)
+):
+    auth_header = request.headers.get("Authorization")
+    if not auth_header or not auth_header.startswith("Bearer "):
+        raise HTTPException(status_code=401, detail="Token required")
+
+    token = auth_header.split(" ")[1]
+
+    try:
+        jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
+    except Exception:
+        raise HTTPException(status_code=401, detail="Invalid token")
+
+    movie_id = len(movies) + len(added_movies) + 1
+
+    new_movie = {
+        "id": movie_id,
+        "name": name,
+        "director": director,
+        "budget": budget,
+        "is_hit": is_hit,
+        "description_file": None,
+        "cover_file": None
+    }
+
+    added_movies.append(new_movie)
+
+    return {"message": "Фильм добавлен через JWT", "movie": new_movie}
 
 @app.get("/login", response_class=HTMLResponse)
 def login_form():
@@ -186,6 +243,7 @@ async def login(
         data = await request.json()
         username = data.get("username")
         password = data.get("password")
+
     if username == "user" and password == "123":
         token = uuid4().hex
         now = datetime.utcnow()
@@ -201,7 +259,11 @@ async def login(
             httponly=True,
             max_age=120,
         )
-        return {"message": "Login successful"}
+        expire = datetime.utcnow() + timedelta(minutes=JWT_EXPIRE_MINUTES)
+        jwt_data = {"sub": username, "exp": expire}
+        jwt_token = jwt.encode(jwt_data, SECRET_KEY, algorithm=ALGORITHM)
+        return {"message": "Login successful", "token": jwt_token}
+
     return {"message": "Invalid credentials"}
 
 @app.get("/user")
